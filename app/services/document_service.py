@@ -10,6 +10,8 @@ import uuid
 from app.utils.text_splitter import TextSplitter
 from concurrent.futures import ThreadPoolExecutor
 from langchain_core.documents import Document
+import re
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 class DocumentService(BaseService[DocumentModel]):
@@ -157,32 +159,65 @@ class DocumentService(BaseService[DocumentModel]):
             self.logger.info(f"加载到{len(langchain_docs)}个文档")
             if not langchain_docs:
                 raise ValueError(f"未能抽取到任何文本内容")
+            if not self._is_english_document(langchain_docs):
+                raise ValueError("当前系统仅支持英文文档，请上传英文内容后重试。")
             # 创建文本的分块器，指定知识库参数
-            splitter = TextSplitter(
+            parent_splitter = TextSplitter(
                 chunk_size=kb_chunk_size, chunk_overlap=kb_chunk_overlap
             )
-            # 将文档进行分块
-            chunks = splitter.split_documents(langchain_docs, doc_id=doc_id)
-            if not chunks:
-                raise ValueError(f"文档{doc_id}未能成功分块")
-            self.logger.info(f"加载到{len(chunks)}个分块")
+            # 第一层：父分块（章节/大段）
+            parent_chunks = parent_splitter.split_documents(langchain_docs, doc_id=doc_id)
+            if not parent_chunks:
+                raise ValueError(f"文档{doc_id}未能成功分层切分（父分块为空）")
+            child_chunk_size = self._calc_child_chunk_size(kb_chunk_size)
+            child_chunk_overlap = self._calc_child_chunk_overlap(child_chunk_size, kb_chunk_overlap)
+            child_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=child_chunk_size,
+                chunk_overlap=child_chunk_overlap,
+                length_function=len,
+                separators=["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""],
+            )
+            self.logger.info(
+                f"父子分层切分参数: parent_size={kb_chunk_size}, parent_overlap={kb_chunk_overlap}, "
+                f"child_size={child_chunk_size}, child_overlap={child_chunk_overlap}"
+            )
             # 初始化一个列表用于存放默认换后的langchain document对象
             documents = []
-            for chunk in chunks:
-                # 创建一个langchain document对象
-                doc_obj = Document(
-                    page_content=chunk["text"],
-                    metadata={
-                        "doc_id": doc_id,  # 文档ID
-                        "doc_name": doc_name,  # 文档名称
-                        "chunk_index": chunk["chunk_index"],  # 分块索引
-                        "id": chunk["id"],  # 分块ID
-                        "chunk_id": chunk["id"],  # 分块ID
-                    },
-                )
-                documents.append(doc_obj)
-            # 提取所有分块的ID，用于向量存储 chunk["id"]=它对就应的文档ID_index索引
-            chunk_ids = [chunk["id"] for chunk in chunks]
+            chunk_ids = []
+            child_counter = 0
+            for parent_idx, parent in enumerate(parent_chunks):
+                parent_text = (parent.get("text") or "").strip()
+                if not parent_text:
+                    continue
+                parent_id = f"{doc_id}_p_{parent_idx}"
+                child_texts = child_splitter.split_text(parent_text)
+                for child_idx, child_text in enumerate(child_texts):
+                    child_text = (child_text or "").strip()
+                    if not child_text:
+                        continue
+                    child_id = f"{parent_id}_c_{child_idx}"
+                    doc_obj = Document(
+                        page_content=child_text,
+                        metadata={
+                            "doc_id": doc_id,  # 文档ID
+                            "doc_name": doc_name,  # 文档名称
+                            "chunk_index": child_counter,  # 兼容旧字段：全局子分块序号
+                            "id": child_id,  # 子分块ID
+                            "chunk_id": child_id,  # 子分块ID
+                            "node_type": "child",  # 节点类型
+                            "parent_id": parent_id,  # 父分块ID（关联键）
+                            "parent_chunk_index": parent_idx,  # 父分块序号
+                            "child_chunk_index": child_idx,  # 父分块内子序号
+                            "parent_content": parent_text,  # 父分块正文（命中后回填上下文）
+                            "doc_lang": "en",  # 文档语言
+                        },
+                    )
+                    documents.append(doc_obj)
+                    chunk_ids.append(child_id)
+                    child_counter += 1
+            if not documents:
+                raise ValueError(f"文档{doc_id}未能成功分层切分（子分块为空）")
+            self.logger.info(f"父分块{len(parent_chunks)}个，子分块{len(documents)}个")
             # 调用向量服务，将分块后的文档对象写入向量数据库
             vector_service.add_documents(
                 collection_name=collection_name, documents=documents, ids=chunk_ids
@@ -195,8 +230,8 @@ class DocumentService(BaseService[DocumentModel]):
                 )
                 if doc:
                     doc.status = "completed"
-                    doc.chunk_count = len(chunks)
-            self.logger.info(f"文档{doc_id}处理完成,分块数量为{len(chunks)}")
+                    doc.chunk_count = len(documents)
+            self.logger.info(f"文档{doc_id}处理完成,子分块数量为{len(documents)}")
 
         except Exception as e:
             # 如果文档处理了，则需要更新文档的状态为失败，并且记录错误信息
@@ -212,6 +247,34 @@ class DocumentService(BaseService[DocumentModel]):
                     session.flush()
                     session.refresh(doc)
             self.logger.error(f"处理文档{doc_id}时发生了错误:{e}")
+
+    @staticmethod
+    def _is_english_document(langchain_docs, min_letters: int = 80) -> bool:
+        """
+        仅允许英文文档入库：
+        - 英文字母数量需要达到最小阈值；
+        - CJK 字符占比不能过高。
+        """
+        text = " ".join((d.page_content or "") for d in (langchain_docs or []))
+        if not text.strip():
+            return False
+        sample = text[:20000]
+        letters = len(re.findall(r"[A-Za-z]", sample))
+        cjk = len(re.findall(r"[\u4e00-\u9fff]", sample))
+        total = max(1, len(sample))
+        cjk_ratio = cjk / total
+        return letters >= min_letters and cjk_ratio <= 0.08
+
+    @staticmethod
+    def _calc_child_chunk_size(parent_chunk_size: int) -> int:
+        parent_chunk_size = max(200, int(parent_chunk_size or 0))
+        # 英文场景：子分块偏小，提升向量召回精度
+        return max(120, min(320, parent_chunk_size // 4))
+
+    @staticmethod
+    def _calc_child_chunk_overlap(child_chunk_size: int, parent_overlap: int) -> int:
+        base = max(20, int(parent_overlap or 0) // 4)
+        return max(20, min(child_chunk_size // 3, base))
 
     def delete(self, doc_id):
         """

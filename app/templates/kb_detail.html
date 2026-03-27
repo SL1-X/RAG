@@ -69,6 +69,44 @@
         transform: translateY(-1px);
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     }
+    .nav-card {
+        border-radius: 12px;
+        border: 1px solid var(--bs-border-color-translucent);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+        margin-bottom: 1rem;
+    }
+    .nav-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.8rem;
+    }
+    .nav-block {
+        border: 1px solid var(--bs-border-color);
+        border-radius: 10px;
+        background: var(--bs-light-bg-subtle, #f8f9fa);
+        padding: 0.7rem 0.8rem;
+    }
+    .nav-block h6 {
+        margin-bottom: 0.55rem;
+        font-size: 0.92rem;
+        font-weight: 700;
+    }
+    .nav-list {
+        margin: 0;
+        padding-left: 1.1rem;
+        font-size: 0.9rem;
+    }
+    .nav-list li {
+        margin-bottom: 0.3rem;
+    }
+    .nav-meta {
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+    .nav-loading {
+        font-size: 0.9rem;
+        color: var(--bs-secondary-color);
+    }
     
     .modal-content {
         border-radius: 16px;
@@ -154,6 +192,9 @@
     
     /* 响应式调整 */
     @media (max-width: 768px) {
+        .nav-grid {
+            grid-template-columns: 1fr;
+        }
         .doc-table {
             font-size: 0.875rem;
         }
@@ -177,6 +218,43 @@
             <li class="breadcrumb-item active">{{ kb.name }}</li>
         </ol>
     </nav>
+
+    <div class="nav-card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">
+                <i class="bi bi-signpost-split me-2"></i>
+                文档级导航
+            </h5>
+            <button id="refreshNavBtn" class="btn btn-outline-primary btn-sm" onclick="loadNavigation(true)">
+                <i class="bi bi-arrow-clockwise me-1"></i>刷新导航
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="nav-meta mb-2" id="navStats"></div>
+            <div id="navLoading" class="nav-loading">
+                <i class="bi bi-hourglass-split me-1"></i> 正在生成目录、时间线、主题聚类和关键问题建议...
+            </div>
+            <div id="navError" class="alert alert-warning d-none mb-2"></div>
+            <div id="navGrid" class="nav-grid d-none">
+                <section class="nav-block">
+                    <h6><i class="bi bi-list-nested me-1"></i> 自动目录</h6>
+                    <div id="navToc"></div>
+                </section>
+                <section class="nav-block">
+                    <h6><i class="bi bi-calendar-event me-1"></i> 时间线</h6>
+                    <div id="navTimeline"></div>
+                </section>
+                <section class="nav-block">
+                    <h6><i class="bi bi-diagram-3 me-1"></i> 主题聚类</h6>
+                    <div id="navThemes"></div>
+                </section>
+                <section class="nav-block">
+                    <h6><i class="bi bi-patch-question me-1"></i> 关键问题建议</h6>
+                    <div id="navQuestions"></div>
+                </section>
+            </div>
+        </div>
+    </div>
 
     <!-- 文档管理卡片 -->
     <div class="doc-card">
@@ -373,6 +451,105 @@
 {% block extra_js %}
 <script>
     const kbId = '{{kb.id}}'
+    function esc(text) {
+        const div = document.createElement("div");
+        div.textContent = text ?? "";
+        return div.innerHTML;
+    }
+    function renderSimpleList(items, emptyText) {
+        if (!items || !items.length) {
+            return `<p class="text-muted small mb-0">${esc(emptyText)}</p>`;
+        }
+        return `<ul class="nav-list">${items.map((x) => `<li>${x}</li>`).join("")}</ul>`;
+    }
+    function renderToc(toc) {
+        if (!toc || !toc.length) {
+            return `<p class="text-muted small mb-0">暂无目录结果</p>`;
+        }
+        return toc
+            .map((doc) => {
+                const headings = (doc.headings || []).slice(0, 5).map((h) => esc(h));
+                return `
+                <div class="mb-2">
+                    <div class="fw-semibold small">${esc(doc.doc_name || "未知文档")}</div>
+                    ${renderSimpleList(headings, "未识别到章节标题")}
+                </div>
+                `;
+            })
+            .join("");
+    }
+    function renderTimeline(timeline) {
+        if (!timeline || !timeline.length) {
+            return `<p class="text-muted small mb-0">暂无时间线事件</p>`;
+        }
+        const items = timeline.slice(0, 12).map((item) => {
+            return `<strong>${esc(item.date_display || item.date)}</strong> · ${esc(item.summary || "")}
+                <div class="nav-meta">${esc(item.doc_name || "")}</div>`;
+        });
+        return renderSimpleList(items, "暂无时间线事件");
+    }
+    function renderThemes(themes) {
+        if (!themes || !themes.length) {
+            return `<p class="text-muted small mb-0">暂无可用主题</p>`;
+        }
+        return themes
+            .slice(0, 6)
+            .map((theme) => {
+                const kw = (theme.keywords || []).slice(0, 4).map((k) => esc(k)).join(" / ");
+                const snippet = (theme.snippets || [])[0];
+                return `
+                <div class="mb-2">
+                    <div class="fw-semibold small">${esc(theme.title || "主题")}</div>
+                    <div class="nav-meta mb-1">${kw}</div>
+                    <div class="small">${esc(snippet?.text || "")}</div>
+                </div>
+                `;
+            })
+            .join("");
+    }
+    function renderQuestions(questions) {
+        const items = (questions || []).slice(0, 10).map((q) => esc(q));
+        return renderSimpleList(items, "暂无建议问题");
+    }
+    async function loadNavigation(forceRefresh = false) {
+        const loadingEl = document.getElementById("navLoading");
+        const errorEl = document.getElementById("navError");
+        const gridEl = document.getElementById("navGrid");
+        const statsEl = document.getElementById("navStats");
+        const btn = document.getElementById("refreshNavBtn");
+        if (!loadingEl || !errorEl || !gridEl || !statsEl) return;
+        if (btn) btn.disabled = true;
+        loadingEl.classList.remove("d-none");
+        errorEl.classList.add("d-none");
+        gridEl.classList.add("d-none");
+        try {
+            const url = `/api/v1/knowledgebases/${kbId}/navigation${forceRefresh ? `?t=${Date.now()}` : ""}`;
+            const response = await fetch(url);
+            const result = await response.json();
+            if (!response.ok || result.code !== 200) {
+                throw new Error(result.message || "加载导航失败");
+            }
+            const data = result.data || {};
+            document.getElementById("navToc").innerHTML = renderToc(data.toc || []);
+            document.getElementById("navTimeline").innerHTML = renderTimeline(data.timeline || []);
+            document.getElementById("navThemes").innerHTML = renderThemes(data.themes || []);
+            document.getElementById("navQuestions").innerHTML = renderQuestions(
+                data.suggested_questions || []
+            );
+            const stats = data.stats || {};
+            statsEl.textContent = `覆盖 ${Number(stats.docs || 0)} 个文档 / ${Number(
+                stats.chunks || 0
+            )} 个分块`;
+            gridEl.classList.remove("d-none");
+        } catch (error) {
+            errorEl.textContent = error.message || "加载导航失败";
+            errorEl.classList.remove("d-none");
+            statsEl.textContent = "";
+        } finally {
+            loadingEl.classList.add("d-none");
+            if (btn) btn.disabled = false;
+        }
+    }
     async function uploadDocument(event) {
         event.preventDefault()
         const form = event.target;
@@ -434,5 +611,8 @@
             alert("文档删除失败"+error.message)
         }
     }
+    document.addEventListener("DOMContentLoaded", function () {
+        loadNavigation(false);
+    });
 </script>
 {% endblock %}

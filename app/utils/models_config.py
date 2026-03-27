@@ -47,30 +47,25 @@ EMBEDDING_MODELS = {
         # 是否需要 Base URL
         "requires_base_url": True,
     },
-    # OpenAI 嵌入模型
-    "openai": {
-        "name": "OpenAI Embeddings",
-        "description": "OpenAI 官方嵌入模型",
-        # OpenAI 可用模型
+    # Gemini 嵌入模型
+    "gemini": {
+        "name": "Gemini Embeddings",
+        "description": "Google Gemini 官方嵌入模型",
+        # Gemini 可用模型
         "models": [
             {
-                "name": "text-embedding-3-small",
-                "dimension": "1536",
-                "description": "小型模型，速度快",
+                "name": "models/text-embedding-004",
+                "dimension": "768",
+                "description": "通用文本嵌入模型，推荐默认",
             },
             {
-                "name": "text-embedding-3-large",
-                "dimension": "3072",
-                "description": "大型模型，精度高",
-            },
-            {
-                "name": "text-embedding-ada-002",
-                "dimension": "1536",
-                "description": "经典模型",
+                "name": "models/embedding-001",
+                "dimension": "768",
+                "description": "兼容模型",
             },
         ],
         "requires_api_key": True,
-        "requires_base_url": True,
+        "requires_base_url": False,
     },
     # 本地 Ollama 嵌入模型
     "ollama": {
@@ -105,15 +100,15 @@ LLM_MODELS = {
         "requires_api_key": True,
         "requires_base_url": True,
     },
-    # OpenAI 大模型配置
-    "openai": {
-        "name": "OpenAI",
-        "description": "OpenAI API",
-        # OpenAI 可用大模型
+    # Gemini 大模型配置
+    "gemini": {
+        "name": "Gemini",
+        "description": "Google Gemini API",
+        # Gemini 可用大模型
         "models": [
-            {"name": "gpt-4", "description": "GPT-4 模型"},
-            {"name": "gpt-4-turbo", "description": "GPT-4 Turbo 模型"},
-            {"name": "gpt-3.5-turbo", "description": "GPT-3.5 Turbo 模型"},
+            {"name": "gemini-2.5-pro", "description": "高质量推理模型"},
+            {"name": "gemini-2.5-flash", "description": "高性价比快速模型"},
+            {"name": "gemini-2.0-flash", "description": "低延迟模型"},
         ],
         "requires_api_key": True,
         "requires_base_url": False,
@@ -124,9 +119,9 @@ LLM_MODELS = {
         "description": "本地 Ollama 模型",
         # Ollama 可用大模型
         "models": [
-            {"name": "llama2", "description": "Llama 2 模型"},
-            {"name": "mistral", "description": "Mistral 模型"},
-            {"name": "qwen", "description": "Qwen 模型"},
+            {"name": "qwen2.5:7b", "description": "英文问答性价比模型"},
+            {"name": "mistral:7b", "description": "轻量英文模型"},
+            {"name": "llama3.1:8b", "description": "通用英文模型"},
         ],
         "requires_api_key": False,
         "requires_base_url": True,

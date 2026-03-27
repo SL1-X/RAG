@@ -24,6 +24,7 @@ from app.blueprints.utils import (
 from app.utils.auth import get_current_user, login_required, api_login_required
 from app.services.storage_service import storage_service
 from app.services.document_service import document_service
+from app.services.navigation_service import navigation_service
 
 logger = get_logger(__name__)
 
@@ -233,3 +234,22 @@ def kb_detail(kb_id):
         documents=result["items"],
         pagination=result["pagination"],
     )
+
+
+@bp.route("/api/v1/knowledgebases/<kb_id>/navigation", methods=["GET"])
+@api_login_required
+@handle_api_error
+def api_navigation(kb_id):
+    current_user, error = get_current_user_or_error()
+    if error:
+        return error
+    kb_dict = kb_service.get_by_id(kb_id)
+    if not kb_dict:
+        return error_response("知识库未找到", 404)
+    has_permission, err = check_ownership(
+        kb_dict["user_id"], current_user["id"], "knowledgebase"
+    )
+    if not has_permission:
+        return err
+    data = navigation_service.build_knowledgebase_navigation(kb_id)
+    return success_response(data)

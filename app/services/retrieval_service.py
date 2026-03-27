@@ -10,6 +10,9 @@ from collections import defaultdict
 import re
 from difflib import SequenceMatcher
 import json
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 logger = get_logger(__name__)
 
@@ -18,6 +21,8 @@ class RetrievalService:
     def __init__(self):
         self._reranker_init_attempted = False
         self.reranker = None
+        self._keyword_index_cache = {}
+        self._keyword_cache_lock = threading.Lock()
 
     def _get_settings(self) -> dict:
         # 每次检索都拉取最新设置，避免服务初始化后配置过期
@@ -196,11 +201,100 @@ class RetrievalService:
         }
         logger.info(f"RETRIEVAL_TRACE {json.dumps(payload, ensure_ascii=False, sort_keys=True)}")
 
-    def vector_search(self, collection_name, query, rerank=True):
-        settings = self._get_settings()
+    def _promote_children_to_parents(self, docs, target_parent_k: int):
+        """
+        子块命中 -> 父块上下文：
+        按 child 命中顺序聚合 parent_id，父块内容优先取 metadata.parent_content。
+        """
+        if not docs:
+            return []
+        parent_docs = []
+        parent_seen = set()
+        for doc in docs:
+            metadata = doc.metadata or {}
+            parent_id = metadata.get("parent_id")
+            parent_content = metadata.get("parent_content")
+            if not parent_id or not parent_content:
+                # 兼容老索引（无父子结构）：直接按当前块返回
+                parent_docs.append(doc)
+                if len(parent_docs) >= target_parent_k:
+                    break
+                continue
+            if parent_id in parent_seen:
+                continue
+            parent_seen.add(parent_id)
+            new_meta = dict(metadata)
+            new_meta["node_type"] = "parent_context"
+            new_meta["id"] = parent_id
+            new_meta["chunk_id"] = parent_id
+            new_meta["hit_child_id"] = metadata.get("chunk_id") or metadata.get("id")
+            promoted = Document(page_content=parent_content, metadata=new_meta)
+            parent_docs.append(promoted)
+            if len(parent_docs) >= target_parent_k:
+                break
+        return parent_docs
+
+    @staticmethod
+    def _to_bool(value, default=True) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return bool(default)
+        return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+    @staticmethod
+    def _to_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    def _build_keyword_index(self, vector_store):
+        results = vector_store._collection.get(include=["documents", "metadatas"])
+        ids = results.get("ids") or []
+        chroma_documents = results.get("documents") or []
+        metadatas = results.get("metadatas") or []
+        langchain_docs = []
+        for _id, chroma_document, meta in zip(ids, chroma_documents, metadatas):
+            meta = meta or {}
+            node_type = str(meta.get("node_type") or "")
+            if node_type and node_type != "child":
+                continue
+            langchain_docs.append(Document(page_content=chroma_document, metadata=meta))
+        if not langchain_docs:
+            return {
+                "bm25": None,
+                "docs": [],
+                "doc_count": 0,
+                "total_count": len(ids),
+                "built_at": time.monotonic(),
+            }
+        tokenized_docs = [self._tokenize_for_keyword(doc.page_content) for doc in langchain_docs]
+        return {
+            "bm25": BM25Okapi(tokenized_docs),
+            "docs": langchain_docs,
+            "doc_count": len(langchain_docs),
+            "total_count": len(ids),
+            "built_at": time.monotonic(),
+        }
+
+    def _get_keyword_index(self, collection_name: str, vector_store, settings: dict):
+        ttl_sec = max(0, min(self._to_int(settings.get("keyword_index_ttl_sec", 300), 300), 3600))
+        now = time.monotonic()
+        with self._keyword_cache_lock:
+            cached = self._keyword_index_cache.get(collection_name)
+            if cached and (now - cached.get("built_at", 0.0)) <= ttl_sec:
+                return cached
+        built = self._build_keyword_index(vector_store)
+        with self._keyword_cache_lock:
+            self._keyword_index_cache[collection_name] = built
+        return built
+
+    def vector_search(self, collection_name, query, rerank=True, settings: dict | None = None):
+        settings = settings or self._get_settings()
         self._ensure_reranker(settings)
         vector_store = vector_service.get_or_create_collection(collection_name)
-        top_k = int(settings.get("top_k", "5"))
+        top_k = self._to_int(settings.get("top_k", "5"), 5)
         vector_threshold = float(settings.get("vector_threshold", "0.1"))
         # 把向量相似度的阈值限定在0到1之间
         vector_threshold = max(0.0, min(vector_threshold, 1.0))
@@ -247,6 +341,9 @@ class RetrievalService:
         if apply_rerank:
             docs = self._apply_rerank(query, docs, rerank_candidate_k)
         debug["after_rerank"] = len(docs)
+        parent_candidate_k = max(top_k * 3, rerank_candidate_k)
+        docs = self._promote_children_to_parents(docs, parent_candidate_k)
+        debug["after_parent_promote"] = len(docs)
         docs = self._diversify_docs(docs, top_k)
         debug["after_diversify"] = len(docs)
         docs = self._attach_retrieval_rank(docs)
@@ -273,21 +370,17 @@ class RetrievalService:
             logger.error(f"应用重排序出现错误:{str(e)}")
             return docs
 
-    def _tokenize_chinese(self, text: str):
+    def _tokenize_for_keyword(self, text: str):
         """
-        中文分词（使用 jieba）
-
-        Args:
-            text: 输入文本
-
-        Returns:
-            分词后的词列表
+        关键词检索分词：
+        - 英文：正则分词 + 英文停用词
+        - CJK：兼容使用 jieba（仅兜底）
         """
-        # 使用 jieba 分词
-        words = jieba.lcut(text)
-        # 去除停用词和单字
-        stopwords = set(
-            [
+        text = (text or "").strip()
+        if not text:
+            return []
+        if self._contains_cjk(text):
+            cjk_stopwords = {
                 "的",
                 "了",
                 "在",
@@ -307,57 +400,88 @@ class RetrievalService:
                 "能",
                 "而",
                 "及",
-                "与",
                 "或",
+            }
+            words = jieba.lcut(text)
+            return [
+                w.strip()
+                for w in words
+                if len(w.strip()) > 1 and w.strip() not in cjk_stopwords
             ]
-        )
-        tokens = [
-            word.strip()
-            for word in words
-            if len(word.strip()) > 1 and word.strip() not in stopwords
-        ]
-        return tokens
+        en_stopwords = {
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "to",
+            "of",
+            "in",
+            "on",
+            "for",
+            "by",
+            "with",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "as",
+            "at",
+            "that",
+            "this",
+            "it",
+            "from",
+            "into",
+            "about",
+            "what",
+            "which",
+            "who",
+            "when",
+            "where",
+            "how",
+        }
+        words = re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", text.lower())
+        return [w for w in words if len(w) > 1 and w not in en_stopwords]
 
-    def keyword_search(self, collection_name, query, rerank=True):
-        settings = self._get_settings()
+    def keyword_search(self, collection_name, query, rerank=True, settings: dict | None = None):
+        settings = settings or self._get_settings()
         self._ensure_reranker(settings)
         vector_store = vector_service.get_or_create_collection(collection_name)
-        # 从底层的集合中获取所有的内容
-        # 这一步是 获取集合所有文档块，组合成 langchain Document的格式吗
-        results = vector_store._collection.get(
-            include=["documents", "metadatas", "embeddings"]
-        )
-        top_k = int(settings.get("top_k", "5"))
+        top_k = self._to_int(settings.get("top_k", "5"), 5)
         keyword_threshold = float(settings.get("keyword_threshold", "0.1"))
+        rerank_candidate_k = self._get_rerank_candidate_k(settings, top_k)
         # 把关键字相似度的阈值限定在0到1之间
         keyword_threshold = max(0.0, min(keyword_threshold, 1.0))
-        # 初始化用于存储所有文档的列表
-        langchain_docs = []
-        # 获取文档的 ids 列表
-        ids = results["ids"]
-        # 获取文档内容的列表
-        chroma_documents = results["documents"]
-        # 获取元数据的列表
-        metadatas = results["metadatas"]
-        # 获取嵌入向量的列表
-        embeddings = results["embeddings"]
-        # 遍历所有的文档，结合 id、文档内容、元数据和嵌入向量一起输出
-        for i, (id, chroma_document, meta, embedding) in enumerate(
-            zip(ids, chroma_documents, metadatas, embeddings)
-        ):
-            langchain_doc = Document(
-                page_content=chroma_document,
-                metadata=meta,
+        keyword_index = self._get_keyword_index(collection_name, vector_store, settings)
+        langchain_docs = keyword_index.get("docs") or []
+        if not langchain_docs:
+            self._emit_retrieval_trace(
+                "keyword",
+                collection_name,
+                query,
+                {
+                    "top_k": top_k,
+                    "candidate_k": 0,
+                    "keyword_threshold": keyword_threshold,
+                    "rerank_candidate_k": rerank_candidate_k,
+                    "raw_hits": 0,
+                    "after_threshold": 0,
+                    "after_dedup": 0,
+                    "after_rerank": 0,
+                    "after_parent_promote": 0,
+                    "after_diversify": 0,
+                    "final_count": 0,
+                    "fallback_used": False,
+                    "rerank_applied": False,
+                },
             )
-            langchain_docs.append(langchain_doc)
-        # 提取所有的文档的文本内容
-        documents = [doc.page_content for doc in langchain_docs]
-        # 对每个文档进行分词处理
-        tokenized_docs = [self._tokenize_chinese(doc) for doc in documents]
-        # 构建BM25索引
-        bm25 = BM25Okapi(tokenized_docs)
+            return []
+        bm25 = keyword_index.get("bm25")
+        if bm25 is None:
+            return []
         # 对查询语句进行中文分词
-        query_tokens = self._tokenize_chinese(query)
+        query_tokens = self._tokenize_for_keyword(query)
         # 获取每个文档与查询的BM25分数
         scores = bm25.get_scores(query_tokens)
         # 计算分数最大值，用于归一化分数到[0,1]之间
@@ -367,7 +491,6 @@ class RetrievalService:
         # 归一化BM25分数 [1,2,3,4,5]  /5 = [0.2,,,,1]
         normalized_scores = scores / max_score if max_score > 0 else scores
         # 取分数最高的top_k*3个索引,以便于后续过滤
-        rerank_candidate_k = self._get_rerank_candidate_k(settings, top_k)
         candidate_k = max(top_k * 6, rerank_candidate_k)
         debug = {
             "top_k": top_k,
@@ -409,6 +532,9 @@ class RetrievalService:
         if apply_rerank:
             docs = self._apply_rerank(query, docs, rerank_candidate_k)
         debug["after_rerank"] = len(docs)
+        parent_candidate_k = max(top_k * 3, rerank_candidate_k)
+        docs = self._promote_children_to_parents(docs, parent_candidate_k)
+        debug["after_parent_promote"] = len(docs)
         docs = self._diversify_docs(docs, top_k)
         debug["after_diversify"] = len(docs)
         docs = self._attach_retrieval_rank(docs)
@@ -418,14 +544,14 @@ class RetrievalService:
         logger.info(f"BM25关键词本文检索 ：检索到{len(docs)}个文档")
         return docs
 
-    def hybrid_search(self, collection_name, query, rrf_k=60):
+    def hybrid_search(self, collection_name, query, rrf_k=60, settings: dict | None = None):
         """
         融合检索 使用RRF融合向量检索和全文检索
         """
         # 调用向量检索方法，得到向量检索结果
-        settings = self._get_settings()
+        settings = settings or self._get_settings()
         self._ensure_reranker(settings)
-        top_k = int(settings.get("top_k", "5"))
+        top_k = self._to_int(settings.get("top_k", "5"), 5)
         rerank_candidate_k = self._get_rerank_candidate_k(settings, top_k)
         candidate_top_k = max(top_k * 2, rerank_candidate_k)
         debug = {
@@ -435,13 +561,23 @@ class RetrievalService:
             "rerank_candidate_k": rerank_candidate_k,
         }
 
-        vector_results = self.vector_search(
-            collection_name=collection_name, query=query, rerank=False
-        )
-        # 调用关键词检索方法，得到关键词检索结果
-        keyword_results = self.keyword_search(
-            collection_name=collection_name, query=query, rerank=False
-        )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            vector_future = pool.submit(
+                self.vector_search,
+                collection_name=collection_name,
+                query=query,
+                rerank=False,
+                settings=settings,
+            )
+            keyword_future = pool.submit(
+                self.keyword_search,
+                collection_name=collection_name,
+                query=query,
+                rerank=False,
+                settings=settings,
+            )
+            vector_results = vector_future.result()
+            keyword_results = keyword_future.result()
         debug["vector_in"] = len(vector_results)
         debug["keyword_in"] = len(keyword_results)
         # 创建字典用于存储文本及其排名信息
@@ -525,6 +661,9 @@ class RetrievalService:
         if apply_rerank:
             docs = self._apply_rerank(query, docs, rerank_candidate_k)
         debug["after_rerank"] = len(docs)
+        parent_candidate_k = max(top_k * 3, rerank_candidate_k)
+        docs = self._promote_children_to_parents(docs, parent_candidate_k)
+        debug["after_parent_promote"] = len(docs)
         docs = self._diversify_docs(docs, top_k)
         debug["after_diversify"] = len(docs)
         docs = self._attach_retrieval_rank(docs)

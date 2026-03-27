@@ -2,7 +2,9 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# 固定从项目根目录加载 .env，并覆盖空的外部环境变量，避免出现 DB_PASSWORD 被意外置空
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=_ENV_FILE, override=True)
 
 
 # 项目根目录的路径
@@ -42,8 +44,7 @@ class Config:
     DB_HOST = os.environ.get("DB_HOST", "localhost")
     DB_PORT = os.environ.get("DB_PORT", 3306)
     DB_USER = os.environ.get("DB_USER", "root")
-    # DB_PASSWORD = os.environ.get("DB_PASSWORD", "root")
-    DB_PASSWORD = os.environ.get("DB_PASSWORD", "123456")
+    DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
     DB_NAME = os.environ.get("DB_NAME", "rag")
     DB_CHARSET = os.environ.get("DB_CHARSET", "utf8mb4")
 
@@ -62,17 +63,23 @@ class Config:
 
     DEEPSEEK_CHAT_MODEL = os.environ.get("DEEPSEEK_CHAT_MODEL", "deepseek-chat")
     DEEPSEEK_API_KEY = os.environ.get(
-        "DEEPSEEK_API_KEY", "sk-89cb1b5843ec4b01b3c6cf7cded5ea79"
+        "DEEPSEEK_API_KEY", ""
     )
     DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
-    OPENAI_CHAT_MODEL = os.environ.get("DEEPSEEK_CHAT_MODEL", "deepseek-chat")
-    OPENAI_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-    OPENAI_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    GEMINI_CHAT_MODEL = os.environ.get("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+    GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", "gemini-2.0-flash")
+    GEMINI_EMBEDDING_MODEL = os.environ.get(
+        "GEMINI_EMBEDDING_MODEL", "models/text-embedding-004"
+    )
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    GEMINI_BASE_URL = os.environ.get(
+        "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com"
+    )
 
-    OLLAMA_CHAT_MODEL = os.environ.get("DEEPSEEK_CHAT_MODEL", "deepseek-chat")
-    OLLAMA_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-    OLLAMA_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:7b")
+    OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
+    OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     # 指定向量数据库的类型
     VECTOR_DB_TYPE = os.environ.get("VECTOR_DB_TYPE", "chroma")  # chroma 或 milvus
     # 指定 chroma向量数据库的本地存储目录

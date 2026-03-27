@@ -291,7 +291,7 @@
                             <select class="form-select" id="embeddingProvider" name="embedding_provider"
                                 onchange="updateEmbeddingForm()" required>
                                 <option value="huggingface">HuggingFace</option>
-                                <option value="openai">OpenAI</option>
+                                <option value="gemini">Gemini</option>
                                 <option value="ollama">Ollama</option>
                             </select>
                             <div class="form-text">选择向量嵌入模型提供商</div>
@@ -335,7 +335,7 @@
                             <select class="form-select" id="llmProvider" name="llm_provider"
                                 onchange="updateLLMForm()" required>
                                 <option value="deepseek">DeepSeek</option>
-                                <option value="openai">OpenAI</option>
+                                <option value="gemini">Gemini</option>
                                 <option value="ollama">Ollama</option>
                             </select>
                             <div class="form-text">选择大语言模型提供商</div>
@@ -668,12 +668,12 @@
             loadSettings({
                 embedding_provider: 'huggingface',
                 embedding_model_name: 'sentence-transformers/all-MiniLM-L6-v2',
-                embedding_api_key: 'embedding_api_key',
-                embedding_base_url: 'embedding_base_url',
-                llm_provider: 'deepseek',
-                llm_model_name: 'deepseek-chat',
-                llm_api_key: 'sk-637f0b2efe144e30922d361589b120e3',
-                llm_base_url: 'https://api.deepseek.com',
+                embedding_api_key: '',
+                embedding_base_url: '',
+                llm_provider: 'gemini',
+                llm_model_name: 'gemini-2.5-flash',
+                llm_api_key: '',
+                llm_base_url: 'https://generativelanguage.googleapis.com',
                 llm_temperature: 0.7,
                 chat_system_prompt: '你是一个专业的AI助手。请友好、准确地回答用户的问题。',
                 rag_system_prompt: '你是一个专业的AI助手。请基于文档内容回答问题。',

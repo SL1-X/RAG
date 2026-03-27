@@ -1,7 +1,8 @@
 from app.services.settings_service import settings_service
 from app.utils.logger import get_logger
+from app.config import Config
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.embeddings import OllamaEmbeddings
 
 logger = get_logger(__name__)
@@ -9,10 +10,26 @@ logger = get_logger(__name__)
 
 class EmbeddingFactory:
     @staticmethod
+    def _normalize_embedding_model(provider: str, model_name: str) -> str:
+        provider = (provider or "").strip().lower()
+        name = (model_name or "").strip()
+        if provider == "openai":
+            provider = "gemini"
+        if provider != "gemini":
+            return name
+        if not name:
+            return Config.GEMINI_EMBEDDING_MODEL
+        if name.lower().startswith(("text-embedding-", "text-")):
+            return Config.GEMINI_EMBEDDING_MODEL
+        return name
+
+    @staticmethod
     def create_embeddings():
         settings = settings_service.get()
         embedding_provider = settings.get("embedding_provider")
-        embedding_model_name = settings.get("embedding_model_name")
+        embedding_model_name = EmbeddingFactory._normalize_embedding_model(
+            embedding_provider, settings.get("embedding_model_name")
+        )
         embedding_api_key = settings.get("embedding_api_key")
         embedding_base_url = settings.get("embedding_base_url")
         try:
@@ -24,13 +41,14 @@ class EmbeddingFactory:
                     encode_kwargs={"normalize_embeddings": True},
                 )
                 logger.info(f"创建HuggingFaceEmbeddings:{embedding_model_name}")
-            elif (
-                embedding_provider == "openai"
-            ):  # 这个不是本地模型，这是要调用远程OPENAI服务器
-                embeddings = OpenAIEmbeddings(  # 不需要baseUrl,但需要apikey
-                    model_name=embedding_model_name, openai_api_key=embedding_api_key
+            elif embedding_provider in (
+                "gemini",
+                "openai",
+            ):  # openai 作为历史配置兼容，统一走 Gemini
+                embeddings = GoogleGenerativeAIEmbeddings(
+                    model=embedding_model_name, google_api_key=embedding_api_key
                 )
-                logger.info(f"创建OpenAIEmbeddings:{embedding_model_name}")
+                logger.info(f"创建GeminiEmbeddings:{embedding_model_name}")
             elif (
                 embedding_provider == "ollama"
             ):  # 调用的是本地服务 baseURL，但不需要apikey

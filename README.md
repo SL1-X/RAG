@@ -7,7 +7,7 @@
 - 📄 支持多种文档格式上传（PDF、DOCX、TXT、MD）
 - 🗄️ 支持本地存储和 MinIO 对象存储
 - 🔍 支持多种向量数据库（Chroma、Milvus）
-- 🤖 支持多种 LLM 模型（DeepSeek、OpenAI、Ollama）
+- 🤖 支持多种 LLM 模型（DeepSeek、Gemini、Ollama）
 - 💬 智能问答和对话管理
 - 🔐 用户认证和权限管理
 - 📊 知识库管理和文档检索

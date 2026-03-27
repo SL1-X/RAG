@@ -40,7 +40,7 @@ class LocalReranker(BaseReranker):
                 (
                     (score - min_score) / (max_score - min_score)
                     if max_score > min_score
-                    else 0.0
+                    else 0.5
                 )
                 for score in scores_float
             ]

@@ -288,6 +288,8 @@ def rag_chat(kb_id):
                             meta["evaluation"] = triple_eval
                     else:
                         sources = chunk.get("sources")
+                        if meta.get("answer_with_citations"):
+                            full_answer = meta.get("answer_with_citations", full_answer)
                         single_eval = evaluation_service.evaluate_single_answer(
                             answer=full_answer.strip(),
                             sources=sources,

@@ -12,7 +12,7 @@ class Settings(BaseModel):
     # 向量模型提供商
     embedding_provider = Column(
         String(64), nullable=False, default="huggingface"
-    )  # huggingface  openai ollama
+    )  # huggingface gemini ollama
     # 向量嵌入模型的名称
     embedding_model_name = Column(String(256), nullable=False)
     # 向量嵌入模型的基础地址
@@ -23,7 +23,7 @@ class Settings(BaseModel):
     # LLM模型提供商
     llm_provider = Column(
         String(64), nullable=False, default="deepseek"
-    )  # deepseek  openai ollama
+    )  # deepseek gemini ollama
     # LLM模型的名称
     llm_model_name = Column(String(64), nullable=True)
     # LLM模型的基础地址
